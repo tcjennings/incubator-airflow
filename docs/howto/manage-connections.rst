@@ -3,7 +3,7 @@ Managing Connections
 
 Airflow needs to know how to connect to your environment. Information
 such as hostname, port, login and passwords to other systems and services is
-handled in the ``Admin->Connection`` section of the UI. The pipeline code you
+handled in the ``Admin->Connections`` section of the UI. The pipeline code you
 will author will reference the 'conn_id' of the Connection objects.
 
 .. image:: ../img/connections.png
@@ -17,7 +17,7 @@ more information.
 Creating a Connection with the UI
 ---------------------------------
 
-Open the ``Admin->Connection`` section of the UI. Click the ``Create`` link
+Open the ``Admin->Connections`` section of the UI. Click the ``Create`` link
 to create a new connection.
 
 .. image:: ../img/connection_create.png
@@ -34,7 +34,7 @@ to create a new connection.
 Editing a Connection with the UI
 --------------------------------
 
-Open the ``Admin->Connection`` section of the UI. Click the pencil icon next
+Open the ``Admin->Connections`` section of the UI. Click the pencil icon next
 to the connection you wish to edit in the connection list.
 
 .. image:: ../img/connection_edit.png
@@ -133,3 +133,26 @@ Scopes (comma separated)
         Scopes are ignored when using application default credentials. See
         issue `AIRFLOW-2522
         <https://issues.apache.org/jira/browse/AIRFLOW-2522>`_.
+MySQL
+~~~~~~~~~~~~~~~~~~~~~
+The MySQL connect type allows to connect with MySQL database.
+
+Configuring the Connection
+''''''''''''''''''''''''''
+Host (required)
+    The host to connect to.
+
+Schema (optional)
+    Specify the schema name to be used in the database.
+
+Login (required)
+    Specify the user name to connect.
+    
+Password (required)
+    Specify the password to connect.    
+    
+Extra (optional)
+    Specify the charset. Example: {"charset": "utf8"}
+    
+    .. note::
+        If encounter UnicodeDecodeError while working with MySQL connection check the charset defined is matched to the database charset.

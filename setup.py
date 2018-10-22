@@ -45,8 +45,7 @@ def verify_gpl_dependency():
     if os.getenv("READTHEDOCS") == "True":
         os.environ["SLUGIFY_USES_TEXT_UNIDECODE"] = "yes"
 
-    if (not os.getenv("AIRFLOW_GPL_UNIDECODE")
-            and not os.getenv("SLUGIFY_USES_TEXT_UNIDECODE") == "yes"):
+    if not os.getenv("AIRFLOW_GPL_UNIDECODE") and not os.getenv("SLUGIFY_USES_TEXT_UNIDECODE") == "yes":
         raise RuntimeError("By default one of Airflow's dependencies installs a GPL "
                            "dependency (unidecode). To avoid this dependency set "
                            "SLUGIFY_USES_TEXT_UNIDECODE=yes in your environment when you "
@@ -192,6 +191,7 @@ gcp_api = [
     'pandas-gbq'
 ]
 github_enterprise = ['Flask-OAuthlib>=0.9.1']
+google_auth = ['Flask-OAuthlib>=0.9.1']
 hdfs = ['snakebite>=2.7.8']
 hive = [
     'hmsclient>=0.1.0',
@@ -239,7 +239,7 @@ all_dbs = postgres + mysql + hive + mssql + hdfs + vertica + cloudant + druid + 
     + cassandra + mongo
 
 devel = [
-    'click',
+    'click==6.7',
     'freezegun',
     'jira',
     'lxml>=4.0.0',
@@ -292,16 +292,16 @@ def do_setup():
         zip_safe=False,
         scripts=['airflow/bin/airflow'],
         install_requires=[
-            'alembic>=0.8.3, <0.9',
+            'alembic>=0.9, <1.0',
             'bleach~=2.1.3',
             'configparser>=3.5.0, <3.6.0',
             'croniter>=0.3.17, <0.4',
             'dill>=0.2.2, <0.3',
             'flask>=0.12.4, <0.13',
-            'flask-appbuilder>=1.11.1, <2.0.0',
+            'flask-appbuilder>=1.12, <2.0.0',
             'flask-admin==1.4.1',
             'flask-caching>=1.3.3, <1.4.0',
-            'flask-login==0.2.11',
+            'flask-login>=0.3, <0.5',
             'flask-swagger==0.2.13',
             'flask-wtf>=0.14.2, <0.15',
             'funcsigs==1.0.0',
@@ -358,6 +358,7 @@ def do_setup():
             'emr': emr,
             'gcp_api': gcp_api,
             'github_enterprise': github_enterprise,
+            'google_auth': google_auth,
             'hdfs': hdfs,
             'hive': hive,
             'jdbc': jdbc,

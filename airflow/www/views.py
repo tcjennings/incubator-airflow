@@ -260,7 +260,7 @@ def data_profiling_required(f):
     def decorated_function(*args, **kwargs):
         if (
                 current_app.config['LOGIN_DISABLED'] or
-                (not current_user.is_anonymous() and current_user.data_profiling())
+                (not current_user.is_anonymous and current_user.data_profiling())
         ):
             return f(*args, **kwargs)
         else:
@@ -682,12 +682,12 @@ class Airflow(BaseView):
         title = "DAG details"
 
         TI = models.TaskInstance
-        states = (
-            session.query(TI.state, sqla.func.count(TI.dag_id))
-                .filter(TI.dag_id == dag_id)
-                .group_by(TI.state)
-                .all()
-        )
+        states = session\
+            .query(TI.state, sqla.func.count(TI.dag_id))\
+            .filter(TI.dag_id == dag_id)\
+            .group_by(TI.state)\
+            .all()
+
         return self.render(
             'airflow/dag_details.html',
             dag=dag, title=title, states=states, State=State)
@@ -1192,12 +1192,12 @@ class Airflow(BaseView):
     @provide_session
     def blocked(self, session=None):
         DR = models.DagRun
-        dags = (
-            session.query(DR.dag_id, sqla.func.count(DR.id))
-                .filter(DR.state == State.RUNNING)
-                .group_by(DR.dag_id)
-                .all()
-        )
+        dags = session\
+            .query(DR.dag_id, sqla.func.count(DR.id))\
+            .filter(DR.state == State.RUNNING)\
+            .group_by(DR.dag_id)\
+            .all()
+
         payload = []
         for dag_id, active_dag_runs in dags:
             max_active_runs = 0
@@ -1454,8 +1454,8 @@ class Airflow(BaseView):
                 children_key = "_children"
 
             def set_duration(tid):
-                if (isinstance(tid, dict) and tid.get("state") == State.RUNNING and
-                            tid["start_date"] is not None):
+                if isinstance(tid, dict) and tid.get("state") == State.RUNNING \
+                        and tid["start_date"] is not None:
                     d = timezone.utcnow() - pendulum.parse(tid["start_date"])
                     tid["duration"] = d.total_seconds()
                 return tid
@@ -1482,9 +1482,7 @@ class Airflow(BaseView):
         data = {
             'name': '[DAG]',
             'children': [recurse_nodes(t, set()) for t in dag.roots],
-            'instances': [
-                dag_runs.get(d) or {'execution_date': d.isoformat()}
-                for d in dates],
+            'instances': [dag_runs.get(d) or {'execution_date': d.isoformat()} for d in dates],
         }
 
         # minimize whitespace as this can be huge for bigger dags
@@ -1611,6 +1609,10 @@ class Airflow(BaseView):
         base_date = request.args.get('base_date')
         num_runs = request.args.get('num_runs')
         num_runs = int(num_runs) if num_runs else default_dag_run
+
+        if dag is None:
+            flash('DAG "{0}" seems to be missing.'.format(dag_id), "error")
+            return redirect('/admin/')
 
         if base_date:
             base_date = pendulum.parse(base_date)
@@ -1931,21 +1933,48 @@ class Airflow(BaseView):
                     TF.execution_date == ti.execution_date)
             .all()
         ) for ti in tis]))
-        tis_with_fails = sorted(tis + ti_fails, key=lambda ti: ti.start_date)
+        TR = models.TaskReschedule
+        ti_reschedules = list(itertools.chain(*[(
+            session
+            .query(TR)
+            .filter(TR.dag_id == ti.dag_id,
+                    TR.task_id == ti.task_id,
+                    TR.execution_date == ti.execution_date)
+            .all()
+        ) for ti in tis]))
+        # determine bars to show in the gantt chart
+        # all reschedules of one attempt are combinded into one bar
+        gantt_bar_items = []
+        for task_id, items in itertools.groupby(
+                sorted(tis + ti_fails + ti_reschedules, key=lambda ti: ti.task_id),
+                key=lambda ti: ti.task_id):
+            start_date = None
+            for i in sorted(items, key=lambda ti: ti.start_date):
+                start_date = start_date or i.start_date
+                end_date = i.end_date or timezone.utcnow()
+                if type(i) == models.TaskInstance:
+                    gantt_bar_items.append((task_id, start_date, end_date, i.state))
+                    start_date = None
+                elif type(i) == TF and (len(gantt_bar_items) == 0 or
+                                        end_date != gantt_bar_items[-1][2]):
+                    gantt_bar_items.append((task_id, start_date, end_date, State.FAILED))
+                    start_date = None
 
         tasks = []
-        for ti in tis_with_fails:
-            end_date = ti.end_date if ti.end_date else timezone.utcnow()
-            state = ti.state if type(ti) == models.TaskInstance else State.FAILED
+        for gantt_bar_item in gantt_bar_items:
+            task_id = gantt_bar_item[0]
+            start_date = gantt_bar_item[1]
+            end_date = gantt_bar_item[2]
+            state = gantt_bar_item[3]
             tasks.append({
-                'startDate': wwwutils.epoch(ti.start_date),
+                'startDate': wwwutils.epoch(start_date),
                 'endDate': wwwutils.epoch(end_date),
-                'isoStart': ti.start_date.isoformat()[:-4],
+                'isoStart': start_date.isoformat()[:-4],
                 'isoEnd': end_date.isoformat()[:-4],
-                'taskName': ti.task_id,
-                'duration': "{}".format(end_date - ti.start_date)[:-4],
+                'taskName': task_id,
+                'duration': "{}".format(end_date - start_date)[:-4],
                 'status': state,
-                'executionDate': ti.execution_date.isoformat(),
+                'executionDate': dttm.isoformat(),
             })
         states = {task['status']: task['status'] for task in tasks}
         data = {
@@ -2311,13 +2340,10 @@ class SlaMissModelView(wwwutils.SuperUserMixin, ModelViewOnly):
 
 @provide_session
 def _connection_ids(session=None):
-    return [
-            (c.conn_id, c.conn_id)
-            for c in (
-                session.query(models.Connection.conn_id)
-                    .group_by(models.Connection.conn_id)
-            )
-    ]
+    return [(c.conn_id, c.conn_id) for c in (
+        session
+            .query(models.Connection.conn_id)
+            .group_by(models.Connection.conn_id))]
 
 
 class ChartModelView(wwwutils.DataProfilingMixin, AirflowModelView):
@@ -3117,20 +3143,16 @@ class DagModelView(wwwutils.SuperUserMixin, ModelView):
         """
         Default filters for model
         """
-        return (
-            super(DagModelView, self)
-                .get_query()
-                .filter(or_(models.DagModel.is_active, models.DagModel.is_paused))
-                .filter(~models.DagModel.is_subdag)
-        )
+        return super(DagModelView, self)\
+            .get_query()\
+            .filter(or_(models.DagModel.is_active, models.DagModel.is_paused))\
+            .filter(~models.DagModel.is_subdag)
 
     def get_count_query(self):
         """
         Default filters for model
         """
-        return (
-            super(DagModelView, self)
-                .get_count_query()
-                .filter(models.DagModel.is_active)
-                .filter(~models.DagModel.is_subdag)
-        )
+        return super(DagModelView, self)\
+            .get_count_query()\
+            .filter(models.DagModel.is_active)\
+            .filter(~models.DagModel.is_subdag)

@@ -19,7 +19,6 @@
 # under the License.
 
 from __future__ import print_function
-from backports.configparser import NoSectionError
 import logging
 
 import os
@@ -501,19 +500,7 @@ def run(args, dag=None):
         if os.path.exists(args.cfg_path):
             os.remove(args.cfg_path)
 
-        # Do not log these properties since some may contain passwords.
-        # This may also set default values for database properties like
-        # core.sql_alchemy_pool_size
-        # core.sql_alchemy_pool_recycle
-        for section, config in conf_dict.items():
-            for option, value in config.items():
-                try:
-                    conf.set(section, option, value)
-                except NoSectionError:
-                    log.error('Section {section} Option {option} '
-                              'does not exist in the config!'.format(section=section,
-                                                                     option=option))
-
+        conf.conf.read_dict(conf_dict, source=args.cfg_path)
         settings.configure_vars()
 
     # IMPORTANT, have to use the NullPool, otherwise, each "run" command may leave
@@ -654,6 +641,11 @@ def list_tasks(args, dag=None):
 
 @cli_utils.action_logging
 def test(args, dag=None):
+    # We want log outout from operators etc to show up here. Normally
+    # airflow.task would redirect to a file, but here we want it to propagate
+    # up to the normal airflow handler.
+    logging.getLogger('airflow.task').propagate = True
+
     dag = dag or get_dag(args)
 
     task = dag.get_task(task_id=args.task_id)
@@ -861,8 +853,12 @@ def webserver(args):
         print(
             "Starting the web server on port {0} and host {1}.".format(
                 args.port, args.hostname))
-        app = create_app_rbac(conf) if settings.RBAC else create_app(conf)
-        app.run(debug=True, port=args.port, host=args.hostname,
+        if settings.RBAC:
+            app, _ = create_app_rbac(conf, testing=conf.get('core', 'unit_test_mode'))
+        else:
+            app = create_app(conf, testing=conf.get('core', 'unit_test_mode'))
+        app.run(debug=True, use_reloader=False if app.config['TESTING'] else True,
+                port=args.port, host=args.hostname,
                 ssl_context=(ssl_cert, ssl_key) if ssl_cert and ssl_key else None)
     else:
         os.environ['SKIP_DAGS_PARSING'] = 'True'
@@ -1042,13 +1038,18 @@ def worker(args):
     from airflow.executors.celery_executor import app as celery_app
     from celery.bin import worker
 
+    autoscale = args.autoscale
+    if autoscale is None and conf.has_option("celery", "worker_autoscale"):
+        autoscale = conf.get("celery", "worker_autoscale")
     worker = worker.worker(app=celery_app)
     options = {
         'optimization': 'fair',
         'O': 'fair',
         'queues': args.queues,
         'concurrency': args.concurrency,
+        'autoscale': autoscale,
         'hostname': args.celery_hostname,
+        'loglevel': conf.get('core', 'LOGGING_LEVEL'),
     }
 
     if args.daemon:
@@ -1338,74 +1339,75 @@ def kerberos(args):  # noqa
 
 
 @cli_utils.action_logging
-def create_user(args):
-    fields = {
-        'role': args.role,
-        'username': args.username,
-        'email': args.email,
-        'firstname': args.firstname,
-        'lastname': args.lastname,
-    }
-    empty_fields = [k for k, v in fields.items() if not v]
-    if empty_fields:
-        raise SystemExit('Required arguments are missing: {}.'.format(
-            ', '.join(empty_fields)))
+def users(args):
+    if args.list:
 
-    appbuilder = cached_appbuilder()
-    role = appbuilder.sm.find_role(args.role)
-    if not role:
-        raise SystemExit('{} is not a valid role.'.format(args.role))
+        appbuilder = cached_appbuilder()
+        users = appbuilder.sm.get_all_users()
+        fields = ['id', 'username', 'email', 'first_name', 'last_name', 'roles']
+        users = [[user.__getattribute__(field) for field in fields] for user in users]
+        msg = tabulate(users, [field.capitalize().replace('_', ' ') for field in fields],
+                       tablefmt="fancy_grid")
+        if sys.version_info[0] < 3:
+            msg = msg.encode('utf-8')
+        print(msg)
 
-    if args.use_random_password:
-        password = ''.join(random.choice(string.printable) for _ in range(16))
-    elif args.password:
-        password = args.password
-    else:
-        password = getpass.getpass('Password:')
-        password_confirmation = getpass.getpass('Repeat for confirmation:')
-        if password != password_confirmation:
-            raise SystemExit('Passwords did not match!')
-
-    if appbuilder.sm.find_user(args.username):
-        print('{} already exist in the db'.format(args.username))
         return
-    user = appbuilder.sm.add_user(args.username, args.firstname, args.lastname,
-                                  args.email, role, password)
-    if user:
-        print('{} user {} created.'.format(args.role, args.username))
-    else:
-        raise SystemExit('Failed to create user.')
 
+    if args.create:
+        fields = {
+            'role': args.role,
+            'username': args.username,
+            'email': args.email,
+            'firstname': args.firstname,
+            'lastname': args.lastname,
+        }
+        empty_fields = [k for k, v in fields.items() if not v]
+        if empty_fields:
+            raise SystemExit('Required arguments are missing: {}.'.format(
+                ', '.join(empty_fields)))
 
-@cli_utils.action_logging
-def delete_user(args):
-    if not args.username:
-        raise SystemExit('Required arguments are missing: username')
+        appbuilder = cached_appbuilder()
+        role = appbuilder.sm.find_role(args.role)
+        if not role:
+            raise SystemExit('{} is not a valid role.'.format(args.role))
 
-    appbuilder = cached_appbuilder()
+        if args.use_random_password:
+            password = ''.join(random.choice(string.printable) for _ in range(16))
+        elif args.password:
+            password = args.password
+        else:
+            password = getpass.getpass('Password:')
+            password_confirmation = getpass.getpass('Repeat for confirmation:')
+            if password != password_confirmation:
+                raise SystemExit('Passwords did not match!')
 
-    try:
-        u = next(u for u in appbuilder.sm.get_all_users() if u.username == args.username)
-    except StopIteration:
-        raise SystemExit('{} is not a valid user.'.format(args.username))
+        if appbuilder.sm.find_user(args.username):
+            print('{} already exist in the db'.format(args.username))
+            return
+        user = appbuilder.sm.add_user(args.username, args.firstname, args.lastname,
+                                      args.email, role, password)
+        if user:
+            print('{} user {} created.'.format(args.role, args.username))
+        else:
+            raise SystemExit('Failed to create user.')
 
-    if appbuilder.sm.del_register_user(u):
-        print('User {} deleted.'.format(args.username))
-    else:
-        raise SystemExit('Failed to delete user.')
+    if args.delete:
+        if not args.username:
+            raise SystemExit('Required arguments are missing: username')
 
+        appbuilder = cached_appbuilder()
 
-@cli_utils.action_logging
-def list_users(args):
-    appbuilder = cached_appbuilder()
-    users = appbuilder.sm.get_all_users()
-    fields = ['id', 'username', 'email', 'first_name', 'last_name', 'roles']
-    users = [[user.__getattribute__(field) for field in fields] for user in users]
-    msg = tabulate(users, [field.capitalize().replace('_', ' ') for field in fields],
-                   tablefmt="fancy_grid")
-    if sys.version_info[0] < 3:
-        msg = msg.encode('utf-8')
-    print(msg)
+        try:
+            u = next(u for u in appbuilder.sm.get_all_users()
+                     if u.username == args.username)
+        except StopIteration:
+            raise SystemExit('{} is not a valid user.'.format(args.username))
+
+        if appbuilder.sm.del_register_user(u):
+            print('User {} deleted.'.format(args.username))
+        else:
+            raise SystemExit('Failed to delete user.')
 
 
 @cli_utils.action_logging
@@ -1518,10 +1520,6 @@ class CLIFactory(object):
             "Do not prompt to confirm reset. Use with care!",
             "store_true",
             default=False),
-        'username': Arg(
-            ('-u', '--username',),
-            help='Username of the user',
-            type=str),
 
         # list_dag_runs
         'no_backfill': Arg(
@@ -1877,33 +1875,55 @@ class CLIFactory(object):
             ('--conn_extra',),
             help='Connection `Extra` field, optional when adding a connection',
             type=str),
-        # create_user
-        'role': Arg(
-            ('-r', '--role',),
-            help='Role of the user. Existing roles include Admin, '
-                 'User, Op, Viewer, and Public',
+        # users
+        'username': Arg(
+            ('--username',),
+            help='Username of the user, required to create/delete a user',
             type=str),
         'firstname': Arg(
-            ('-f', '--firstname',),
-            help='First name of the user',
+            ('--firstname',),
+            help='First name of the user, required to create a user',
             type=str),
         'lastname': Arg(
-            ('-l', '--lastname',),
-            help='Last name of the user',
+            ('--lastname',),
+            help='Last name of the user, required to create a user',
+            type=str),
+        'role': Arg(
+            ('--role',),
+            help='Role of the user. Existing roles include Admin, '
+                 'User, Op, Viewer, and Public. Required to create a user',
             type=str),
         'email': Arg(
-            ('-e', '--email',),
-            help='Email of the user',
+            ('--email',),
+            help='Email of the user, required to create a user',
             type=str),
         'password': Arg(
-            ('-p', '--password',),
-            help='Password of the user',
+            ('--password',),
+            help='Password of the user, required to create a user '
+                 'without --use_random_password',
             type=str),
         'use_random_password': Arg(
             ('--use_random_password',),
-            help='Do not prompt for password.  Use random string instead',
+            help='Do not prompt for password. Use random string instead.'
+                 ' Required to create a user without --password ',
             default=False,
             action='store_true'),
+        'list_users': Arg(
+            ('-l', '--list'),
+            help='List all users',
+            action='store_true'),
+        'create_user': Arg(
+            ('-c', '--create'),
+            help='Create a user',
+            action='store_true'),
+        'delete_user': Arg(
+            ('-d', '--delete'),
+            help='Delete a user',
+            action='store_true'),
+        'autoscale': Arg(
+            ('-a', '--autoscale'),
+            help="Minimum and Maximum number of worker to autoscale"),
+
     }
     subparsers = (
         {
@@ -2045,7 +2065,7 @@ class CLIFactory(object):
             'func': worker,
             'help': "Start a Celery worker node",
             'args': ('do_pickle', 'queues', 'concurrency', 'celery_hostname',
-                     'pid', 'daemon', 'stdout', 'stderr', 'log_file'),
+                     'pid', 'daemon', 'stdout', 'stderr', 'log_file', 'autoscale'),
         }, {
             'func': flower,
             'help': "Start a Celery Flower",
@@ -2061,18 +2081,11 @@ class CLIFactory(object):
             'args': ('list_connections', 'add_connection', 'delete_connection',
                      'conn_id', 'conn_uri', 'conn_extra') + tuple(alternative_conn_specs),
         }, {
-            'func': create_user,
-            'help': "Create an account for the Web UI (FAB-based)",
-            'args': ('role', 'username', 'email', 'firstname', 'lastname',
+            'func': users,
+            'help': "List/Create/Delete users",
+            'args': ('list_users', 'create_user', 'delete_user',
+                     'username', 'email', 'firstname', 'lastname', 'role',
                      'password', 'use_random_password'),
-        }, {
-            'func': delete_user,
-            'help': "Delete an account for the Web UI",
-            'args': ('username',),
-        }, {
-            'func': list_users,
-            'help': "List accounts for the Web UI",
-            'args': tuple(),
         },
         {
             'func': sync_perm,
