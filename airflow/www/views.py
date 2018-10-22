@@ -1049,7 +1049,7 @@ class Airflow(BaseView):
     @wwwutils.notify_owner
     def trigger(self):
         dag_id = request.args.get('dag_id')
-        origin = request.args.get('origin') or redirect(request.referrer)
+        origin = request.args.get('origin') or request.referrer
         dag = dagbag.get_dag(dag_id)
 
         if not dag:
