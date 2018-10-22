@@ -1062,7 +1062,7 @@ class Airflow(BaseView):
         dr = DagRun.find(dag_id=dag_id, run_id=run_id)
         if dr:
             flash("This run_id {} already exists".format(run_id))
-            return redirect(origin)
+            return redirect(url_for(origin))
 
         run_conf = {}
 
