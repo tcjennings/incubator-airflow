@@ -1049,7 +1049,7 @@ class Airflow(BaseView):
     @wwwutils.notify_owner
     def trigger(self):
         dag_id = request.args.get('dag_id')
-        origin = request.args.get('origin') or "/admin/"
+        origin = request.args.get('origin') or redirect(request.referrer)
         dag = dagbag.get_dag(dag_id)
 
         if not dag:
@@ -1062,7 +1062,7 @@ class Airflow(BaseView):
         dr = DagRun.find(dag_id=dag_id, run_id=run_id)
         if dr:
             flash("This run_id {} already exists".format(run_id))
-            return redirect(url_for(origin))
+            return redirect(origin)
 
         run_conf = {}
 
